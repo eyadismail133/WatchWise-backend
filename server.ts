@@ -9,9 +9,9 @@ import { createContext } from "./src/context.js";
 
 const app = express();
 
-const trustedOrigins =
-  process.env.TRUSTED_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean) ??
-  ["http://localhost:5173"];
+const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(",")
+  .map((o) => o.trim())
+  .filter(Boolean) ?? ["http://localhost:5173"];
 
 const corsOptions = {
   origin: trustedOrigins,
