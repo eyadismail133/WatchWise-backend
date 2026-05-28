@@ -1,0 +1,268 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  user
+  admin
+}
+
+enum SubscriptionStatus {
+  free
+  premium
+}
+
+enum TitleType {
+  movie
+  series
+}
+
+enum WatchlistStatus {
+  want_to_watch
+  watched
+  skipped
+}
+
+enum TmdbMediaType {
+  movie
+  tv
+}
+
+enum HiddenGemStatus {
+  yes
+  no
+}
+
+enum RecommendationFeedback {
+  positive
+  negative
+  neutral
+}
+
+model User {
+  id                 Int                @id @default(autoincrement())
+  name               String             @db.VarChar(255)
+  email              String             @unique @db.VarChar(320)
+  emailVerified      Boolean            @default(false)
+  image              String?
+  avatar             String?
+  role               UserRole           @default(user)
+  subscriptionStatus SubscriptionStatus @default(free)
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastSignInAt DateTime @default(now())
+
+  watchlistItems  WatchlistItem[]
+  favorites       Favorite[]
+  tasteProfile    TasteProfile?
+  recommendations Recommendation[]
+
+  sessions Session[]
+  accounts Account[]
+
+  @@map("users")
+}
+
+model Title {
+  id    Int       @id @default(autoincrement())
+  title String    @db.VarChar(255)
+  type  TitleType
+
+  description String?
+
+  genres             Json?
+  cast               Json?
+  moods              Json?
+  streamingPlatforms Json?
+
+  director String? @db.VarChar(255)
+
+  releaseYear Int?
+  runtime     Int?
+
+  rating               Float?
+  imdbRating           Float?
+  rottenTomatoesRating Int?
+  metacriticRating     Int?
+
+  popularityScore Float? @default(50)
+  hiddenGemScore  Float? @default(0)
+
+  posterUrl   String?
+  backdropUrl String?
+
+  language String? @db.VarChar(100)
+  country  String? @db.VarChar(100)
+
+  createdAt DateTime @default(now())
+
+  watchlistItems  WatchlistItem[]
+  recommendations Recommendation[]
+
+  @@map("titles")
+}
+
+model WatchlistItem {
+  id Int @id @default(autoincrement())
+
+  userId    Int
+  titleId   Int?
+  tmdbId    Int
+  mediaType TmdbMediaType
+
+  status WatchlistStatus @default(want_to_watch)
+
+  userRating Int?
+  tags       Json?
+  notes      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title Title? @relation(fields: [titleId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, tmdbId, mediaType])
+  @@map("watchlist_items")
+}
+
+model Favorite {
+  id        Int           @id @default(autoincrement())
+  userId    Int
+  tmdbId    Int
+  mediaType TmdbMediaType
+  createdAt DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tmdbId, mediaType])
+  @@map("favorites")
+}
+
+model TasteProfile {
+  id Int @id @default(autoincrement())
+
+  userId Int @unique
+
+  favoriteGenres    Json?
+  favoriteMoods     Json?
+  favoriteActors    Json?
+  favoriteDirectors Json?
+
+  dislikedPatterns Json?
+
+  averageRating Float?
+
+  narrativeScore    Float? @default(50)
+  visualScore       Float? @default(50)
+  emotionalScore    Float? @default(50)
+  pacingScore       Float? @default(50)
+  eraScore          Float? @default(50)
+  genreBreadthScore Float? @default(50)
+
+  aiSummary String?
+
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("taste_profiles")
+}
+
+model Recommendation {
+  id Int @id @default(autoincrement())
+
+  userId  Int
+  titleId Int
+
+  explanation String?
+  matchReason String?
+
+  confidence Float?
+
+  moodTags      Json?
+  similarTitles Json?
+
+  isHiddenGem HiddenGemStatus @default(no)
+
+  userFeedback RecommendationFeedback?
+
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title Title @relation(fields: [titleId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([titleId])
+  @@map("recommendations")
+}
+
+model Session {
+  id String @id @default(cuid())
+
+  expiresAt DateTime
+
+  token String @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ipAddress String?
+  userAgent String?
+
+  userId Int
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id String @id @default(cuid())
+
+  accountId  String
+  providerId String
+
+  userId Int
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  accessToken  String?
+  refreshToken String?
+  idToken      String?
+
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+
+  scope    String?
+  password String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id String @id @default(cuid())
+
+  identifier String
+  value      String
+
+  expiresAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
