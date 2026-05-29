@@ -9,12 +9,15 @@ const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(",")
 
 const isProduction = process.env.NODE_ENV === "production";
 
-/** Use the Vite origin in dev so OAuth callbacks and cookies match the proxied client */
-const baseURL = (
-  process.env.BETTER_AUTH_URL?.trim() ||
-  trustedOrigins[0] ||
-  "http://localhost:5173"
-).replace(/\/$/, "");
+// FIX: Separate backend baseURL from frontend trustedOrigins completely.
+const baseURL = process.env.BETTER_AUTH_URL?.trim().replace(/\/$/, "");
+
+// Safety guard: Crash early during deployment if you forgot to set it on your server host
+if (isProduction && !baseURL) {
+  throw new Error(
+    "❌ CRITICAL DEPLOYMENT ERROR: BETTER_AUTH_URL environment variable is missing on the backend server!",
+  );
+}
 
 export const auth = betterAuth({
   database: prismaAdapter(prisma, {
@@ -24,8 +27,8 @@ export const auth = betterAuth({
     enabled: true,
     minPasswordLength: 8,
   },
-  trustedOrigins,
-  baseURL,
+  trustedOrigins, // This stays as your Frontend URL(s)
+  baseURL: baseURL,
   secret: process.env.BETTER_AUTH_SECRET!,
   advanced: {
     database: {
