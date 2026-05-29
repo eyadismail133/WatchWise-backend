@@ -31,9 +31,6 @@ export const auth = betterAuth({
     database: {
       generateId: "serial",
     },
-    crossSubDomainCookies: {
-      enabled: true,
-    },
     cookies: {
       session_token: {
         name: "auth_session",
