@@ -20,8 +20,6 @@ const corsOptions = {
   credentials: true,
 };
 
-app.set("trust proxy", 1);
-
 // Middleware
 app.use(cors(corsOptions));
 app.use(express.json());
