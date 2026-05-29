@@ -1,6 +1,8 @@
 import { z } from "zod";
-import { router, publicProcedure } from "../trpc.js";
+import { router, publicProcedure, protectedProcedure } from "../trpc.js";
+
 import prisma from "../../lib/prisma.js";
+
 import {
   discoverMovies,
   discoverTv,
@@ -12,8 +14,8 @@ import {
   getUpComing,
   getTrending,
   searchMulti,
+  type MediaType,
 } from "../../services/tmdb.js";
-import { protectedProcedure } from "../trpc.js";
 
 const discoverInput = z.object({
   page: z.number().int().min(1).max(500).optional(),
@@ -23,6 +25,7 @@ const discoverInput = z.object({
 });
 
 const mediaTypeInput = z.enum(["movie", "tv"]);
+
 const timeWindowInput = z.enum(["day", "week"]);
 
 export const movieRouter = router({
@@ -110,40 +113,60 @@ export const movieRouter = router({
         .optional(),
     )
     .query(async ({ input }) => {
-      const mediaType = input?.mediaType;
+      const mediaType: MediaType = input?.mediaType ?? "movie";
+
       const pick = await getRandomTrendingPick(mediaType);
+
       const detail = await getDetails(pick.id, mediaType);
+
       return {
         title: detail,
+
         confidence: Math.floor(75 + Math.random() * 20),
+
         explanation: detail.description,
+
         moodTags: detail.genres.slice(0, 3).map((g) => g.toLowerCase()),
+
         isHiddenGem: (detail.hidden_gem_score ?? 0) > 30,
       };
     }),
 
   getTasteProfile: protectedProcedure.query(async ({ ctx }) => {
     const profile = await prisma.tasteProfile.findUnique({
-      where: { userId: ctx.userId },
+      where: {
+        userId: ctx.userId,
+      },
     });
+
     return profile;
   }),
 
   getTasteSummary: protectedProcedure.query(async ({ ctx }) => {
     const [watchlist, favorites] = await Promise.all([
       prisma.watchlistItem.findMany({
-        where: { userId: ctx.userId },
+        where: {
+          userId: ctx.userId,
+        },
         take: 20,
-        orderBy: { updatedAt: "desc" },
+        orderBy: {
+          updatedAt: "desc",
+        },
       }),
+
       prisma.favorite.findMany({
-        where: { userId: ctx.userId },
+        where: {
+          userId: ctx.userId,
+        },
         take: 20,
-        orderBy: { createdAt: "desc" },
+        orderBy: {
+          createdAt: "desc",
+        },
       }),
     ]);
 
     const refs = [...watchlist, ...favorites];
+
     const genreCounts = new Map<string, number>();
 
     await Promise.all(
@@ -151,12 +174,15 @@ export const movieRouter = router({
         try {
           const detail = await getDetails(
             ref.tmdbId,
-            ref.mediaType as "movie" | "tv",
+            ref.mediaType as MediaType,
           );
+
           for (const genre of detail.genres) {
             genreCounts.set(genre, (genreCounts.get(genre) ?? 0) + 1);
           }
-        } catch (e) {}
+        } catch {
+          // ignore failed TMDB requests
+        }
       }),
     );
 
@@ -166,7 +192,9 @@ export const movieRouter = router({
       .map(([name]) => name);
 
     const profile = await prisma.tasteProfile.findUnique({
-      where: { userId: ctx.userId },
+      where: {
+        userId: ctx.userId,
+      },
     });
 
     const topMoods = (profile?.favoriteMoods as string[] | null)?.slice(
@@ -177,10 +205,18 @@ export const movieRouter = router({
     const summary =
       profile?.aiSummary ??
       (topGenres.length > 0
-        ? `You gravitate toward ${topGenres.slice(0, 3).join(", ")}. WatchWise will keep surfacing titles that match that taste.`
+        ? `You gravitate toward ${topGenres
+            .slice(0, 3)
+            .join(
+              ", ",
+            )}. WatchWise will keep surfacing titles that match that taste.`
         : "Rate and save titles to build your taste profile. The more you interact, the sharper your recommendations become.");
 
-    return { topGenres, topMoods, summary };
+    return {
+      topGenres,
+      topMoods,
+      summary,
+    };
   }),
 });
 

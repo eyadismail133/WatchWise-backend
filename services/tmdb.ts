@@ -30,11 +30,59 @@ export interface NormalizedTitle {
   mediaType: MediaType;
 }
 
+export interface PersonCard {
+  id: number;
+  name: string;
+  profile_path: string | null;
+  image: string | null;
+}
+
+export interface CastCard extends PersonCard {
+  character: string | null;
+}
+
+export interface TitleDetail extends NormalizedTitle {
+  runtime: number | null;
+  tagline: string | null;
+  status: string | null;
+  numberOfSeasons: number | null;
+  numberOfEpisodes: number | null;
+  releaseYear: number | null;
+
+  // old compatibility fields
+  cast: string[];
+  director: string | null;
+
+  // new rich fields
+  castCards: CastCard[];
+  directorCard: PersonCard | null;
+
+  language: string | null;
+  country: string | null;
+  imdbRating: number | null;
+  trailerKey: string | null;
+}
+
+export interface PaginatedTitles {
+  results: NormalizedTitle[];
+  page: number;
+  totalPages: number;
+  totalResults: number;
+}
+
+export interface DiscoverParams {
+  page?: number;
+  sort_by?: string;
+  with_genres?: string;
+  year?: number;
+}
+
 export function imageUrl(
   path: string | null | undefined,
   size: "w185" | "w342" | "w500" | "w780" | "original" = "w500",
 ): string | null {
   if (!path) return null;
+
   return `${TMDB_IMAGE_BASE}/${size}${path}`;
 }
 
@@ -43,13 +91,21 @@ function resolveMediaType(item: {
   title?: string;
   name?: string;
   first_air_date?: string;
+  release_date?: string;
 }): MediaType {
-  if (item.media_type === "tv" || item.media_type === "movie") {
-    return item.media_type;
-  }
-  if (item.name && !item.title) return "tv";
-  if (item.first_air_date && !item.title) return "tv";
-  return "movie";
+  // Explicit TMDB media_type always wins
+  if (item.media_type === "tv") return "tv";
+  if (item.media_type === "movie") return "movie";
+
+  // TV detection
+  if (item.name) return "tv";
+  if (item.first_air_date && !item.release_date) return "tv";
+
+  // Movie detection
+  if (item.title) return "movie";
+  if (item.release_date) return "movie";
+
+  return undefined;
 }
 
 export function normalizeListItem(item: {
@@ -68,6 +124,7 @@ export function normalizeListItem(item: {
   genres?: { id: number; name: string }[];
 }): NormalizedTitle {
   const mediaType = resolveMediaType(item);
+
   const genres =
     item.genres?.map((g) => g.name) ??
     (item.genre_ids?.length ? item.genre_ids.map(String) : []);
@@ -89,13 +146,6 @@ export function normalizeListItem(item: {
   };
 }
 
-export interface PaginatedTitles {
-  results: NormalizedTitle[];
-  page: number;
-  totalPages: number;
-  totalResults: number;
-}
-
 function toPaginated(data: {
   results: Parameters<typeof normalizeListItem>[0][];
   page: number;
@@ -110,13 +160,6 @@ function toPaginated(data: {
   };
 }
 
-export interface DiscoverParams {
-  page?: number;
-  sort_by?: string;
-  with_genres?: string;
-  year?: number;
-}
-
 export async function discoverMovies(
   params: DiscoverParams = {},
 ): Promise<PaginatedTitles> {
@@ -128,6 +171,7 @@ export async function discoverMovies(
       primary_release_year: params.year,
     },
   });
+
   return toPaginated(data);
 }
 
@@ -142,39 +186,90 @@ export async function discoverTv(
       first_air_date_year: params.year,
     },
   });
+
   return toPaginated(data);
 }
 
-export interface TitleDetail extends NormalizedTitle {
-  runtime: number | null;
-  tagline: string | null;
-  status: string | null;
-  numberOfSeasons: number | null;
-  numberOfEpisodes: number | null;
-  releaseYear: number | null;
-  cast: string[];
-  director: string | null;
-  language: string | null;
-  country: string | null;
-  imdbRating: number | null;
-  trailerKey: string | null;
-}
-
-function pickDirector(credits?: {
-  crew?: { job: string; name: string }[];
-}): string | null {
+function pickDirectorCredit(credits?: {
+  crew?: {
+    id: number;
+    job: string;
+    name: string;
+    profile_path?: string | null;
+  }[];
+}): {
+  id: number;
+  name: string;
+  profile_path?: string | null;
+} | null {
   const director = credits?.crew?.find(
     (c) => c.job === "Director" || c.job === "Creator",
   );
-  return director?.name ?? null;
+
+  return director ?? null;
+}
+
+function normalizeCastCards(
+  cast?: {
+    id: number;
+    name: string;
+    character?: string | null;
+    profile_path?: string | null;
+  }[],
+): CastCard[] {
+  return (cast ?? []).slice(0, 12).map((person) => ({
+    id: person.id,
+    name: person.name,
+    character: person.character ?? null,
+    profile_path: person.profile_path ?? null,
+    image: imageUrl(person.profile_path),
+  }));
+}
+
+async function hydratePersonCard(person: {
+  id: number;
+  name: string;
+  profile_path?: string | null;
+}): Promise<PersonCard> {
+  let profilePath = person.profile_path ?? null;
+  let name = person.name;
+
+  if (!profilePath) {
+    try {
+      const { data } = await tmdb.get(`/person/${person.id}`, {
+        params: {
+          append_to_response: "images",
+        },
+      });
+
+      name = data.name ?? name;
+
+      profilePath =
+        data.profile_path ?? data.images?.profiles?.[0]?.file_path ?? null;
+    } catch {
+      // ignore TMDB image failures
+    }
+  }
+
+  return {
+    id: person.id,
+    name,
+    profile_path: profilePath,
+    image: imageUrl(profilePath),
+  };
 }
 
 function pickTrailer(videos?: {
-  results?: { site: string; type: string; key: string }[];
+  results?: {
+    site: string;
+    type: string;
+    key: string;
+  }[];
 }): string | null {
   const trailer = videos?.results?.find(
     (v) => v.site === "YouTube" && v.type === "Trailer",
   );
+
   return trailer?.key ?? null;
 }
 
@@ -183,8 +278,11 @@ export async function getDetails(
   mediaType: MediaType,
 ): Promise<TitleDetail> {
   const path = mediaType === "movie" ? `/movie/${id}` : `/tv/${id}`;
+
   const { data } = await tmdb.get(path, {
-    params: { append_to_response: "credits,videos" },
+    params: {
+      append_to_response: "credits,videos",
+    },
   });
 
   const releaseYear = data.release_date
@@ -193,23 +291,44 @@ export async function getDetails(
       ? parseInt(data.first_air_date.slice(0, 4), 10)
       : null;
 
-  const cast =
-    data.credits?.cast?.slice(0, 12).map((c: { name: string }) => c.name) ?? [];
+  const castCards = normalizeCastCards(data.credits?.cast);
+
+  const cast = castCards.map((c) => c.name);
+
+  const directorCredit = pickDirectorCredit(data.credits);
+
+  const directorCard = directorCredit
+    ? await hydratePersonCard(directorCredit)
+    : null;
 
   return {
     ...normalizeListItem(data),
+
     runtime: data.runtime ?? data.episode_run_time?.[0] ?? null,
+
     tagline: data.tagline ?? null,
+
     status: data.status ?? null,
+
     numberOfSeasons: data.number_of_seasons ?? null,
+
     numberOfEpisodes: data.number_of_episodes ?? null,
+
     releaseYear,
+
     cast,
-    director: pickDirector(data.credits),
+    castCards,
+
+    director: directorCard?.name ?? null,
+    directorCard,
+
     language: data.original_language?.toUpperCase() ?? null,
+
     country:
       data.production_countries?.[0]?.name ?? data.origin_country?.[0] ?? null,
+
     imdbRating: data.vote_average ?? null,
+
     trailerKey: pickTrailer(data.videos),
   };
 }
@@ -219,8 +338,13 @@ export async function searchMulti(
   page = 1,
 ): Promise<PaginatedTitles> {
   const { data } = await tmdb.get("/search/multi", {
-    params: { query, page, include_adult: false },
+    params: {
+      query,
+      page,
+      include_adult: false,
+    },
   });
+
   const filtered = {
     ...data,
     results: data.results.filter(
@@ -228,6 +352,7 @@ export async function searchMulti(
         r.media_type === "movie" || r.media_type === "tv",
     ),
   };
+
   return toPaginated(filtered);
 }
 
@@ -238,7 +363,11 @@ export async function getSimilar(
 ): Promise<PaginatedTitles> {
   const path =
     mediaType === "movie" ? `/movie/${id}/similar` : `/tv/${id}/similar`;
-  const { data } = await tmdb.get(path, { params: { page } });
+
+  const { data } = await tmdb.get(path, {
+    params: { page },
+  });
+
   return toPaginated(data);
 }
 
@@ -253,12 +382,15 @@ export async function getGenreMap(): Promise<Map<number, string>> {
   ]);
 
   genreMapCache = new Map<number, string>();
+
   for (const g of movies.data.genres) {
     genreMapCache.set(g.id, g.name);
   }
+
   for (const g of tv.data.genres) {
     genreMapCache.set(g.id, g.name);
   }
+
   return genreMapCache;
 }
 
@@ -274,9 +406,15 @@ export function mapGenreIds(
 export async function getImages(id: number, mediaType: MediaType) {
   const path =
     mediaType === "movie" ? `/movie/${id}/images` : `/tv/${id}/images`;
+
   const { data } = await tmdb.get(path);
+
   const mapImages = (
-    images: { file_path: string; width: number; height: number }[],
+    images: {
+      file_path: string;
+      width: number;
+      height: number;
+    }[],
   ) =>
     images.map((img) => ({
       ...img,
@@ -294,6 +432,7 @@ export async function getTrending(
   timeWindow: TimeWindow = "week",
 ): Promise<PaginatedTitles> {
   const { data } = await tmdb.get(`/trending/all/${timeWindow}`);
+
   return toPaginated(data);
 }
 
@@ -302,7 +441,11 @@ export async function getTopRated(
   page = 1,
 ): Promise<PaginatedTitles> {
   const path = mediaType === "movie" ? "/movie/top_rated" : "/tv/top_rated";
-  const { data } = await tmdb.get(path, { params: { page } });
+
+  const { data } = await tmdb.get(path, {
+    params: { page },
+  });
+
   return toPaginated(data);
 }
 
@@ -311,19 +454,27 @@ export async function getUpComing(
   page = 1,
 ): Promise<PaginatedTitles> {
   const path = mediaType === "movie" ? "/movie/upcoming" : "/tv/upcoming";
-  const { data } = await tmdb.get(path, { params: { page } });
+
+  const { data } = await tmdb.get(path, {
+    params: { page },
+  });
+
   return toPaginated(data);
 }
 
 export async function getRandomTrendingPick(
   mediaType: MediaType,
 ): Promise<NormalizedTitle> {
-  const trending = await getTopRated(mediaType);
+  const trending = await getTopRated(mediaType, 1);
+
   const pool = trending.results;
+
   if (pool.length === 0) {
     const top = await getTopRated(mediaType, 1);
+
     return top.results[0]!;
   }
+
   return pool[Math.floor(Math.random() * pool.length)]!;
 }
 
