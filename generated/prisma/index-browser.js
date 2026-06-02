@@ -129,6 +129,10 @@ exports.Prisma.UserScalarFieldEnum = {
   avatar: 'avatar',
   role: 'role',
   subscriptionStatus: 'subscriptionStatus',
+  username: 'username',
+  bio: 'bio',
+  isWatchlistPublic: 'isWatchlistPublic',
+  isActivityPublic: 'isActivityPublic',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
   lastSignInAt: 'lastSignInAt'
@@ -178,6 +182,7 @@ exports.Prisma.FavoriteScalarFieldEnum = {
   userId: 'userId',
   tmdbId: 'tmdbId',
   mediaType: 'mediaType',
+  featuredRank: 'featuredRank',
   createdAt: 'createdAt'
 };
 
@@ -211,6 +216,35 @@ exports.Prisma.RecommendationScalarFieldEnum = {
   similarTitles: 'similarTitles',
   isHiddenGem: 'isHiddenGem',
   userFeedback: 'userFeedback',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.FollowScalarFieldEnum = {
+  id: 'id',
+  followerId: 'followerId',
+  followingId: 'followingId',
+  createdAt: 'createdAt'
+};
+
+exports.Prisma.CommentScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  tmdbId: 'tmdbId',
+  mediaType: 'mediaType',
+  parentId: 'parentId',
+  body: 'body',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
+  deletedAt: 'deletedAt'
+};
+
+exports.Prisma.ActivityScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  type: 'type',
+  tmdbId: 'tmdbId',
+  mediaType: 'mediaType',
+  metadata: 'metadata',
   createdAt: 'createdAt'
 };
 
@@ -312,6 +346,15 @@ exports.RecommendationFeedback = exports.$Enums.RecommendationFeedback = {
   neutral: 'neutral'
 };
 
+exports.ActivityType = exports.$Enums.ActivityType = {
+  added_to_watchlist: 'added_to_watchlist',
+  added_to_favorites: 'added_to_favorites',
+  marked_watched: 'marked_watched',
+  rated_title: 'rated_title',
+  reviewed_title: 'reviewed_title',
+  followed_user: 'followed_user'
+};
+
 exports.Prisma.ModelName = {
   User: 'User',
   Title: 'Title',
@@ -319,6 +362,9 @@ exports.Prisma.ModelName = {
   Favorite: 'Favorite',
   TasteProfile: 'TasteProfile',
   Recommendation: 'Recommendation',
+  Follow: 'Follow',
+  Comment: 'Comment',
+  Activity: 'Activity',
   Session: 'Session',
   Account: 'Account',
   Verification: 'Verification'

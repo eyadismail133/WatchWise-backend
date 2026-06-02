@@ -3,6 +3,8 @@ import { TRPCError } from "@trpc/server";
 import prisma from "../../lib/prisma.js";
 import { getDetails, type MediaType } from "../../services/tmdb.js";
 import { protectedProcedure, router } from "../trpc.js";
+import { recordActivity } from "../services/activity.js";
+import { ActivityType } from "../../generated/prisma/index.js";
 
 const tmdbRefInput = z.object({
   tmdbId: z.number().int().positive(),
@@ -68,7 +70,7 @@ export const watchlistRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      return prisma.watchlistItem.upsert({
+      const item = await prisma.watchlistItem.upsert({
         where: {
           userId_tmdbId_mediaType: {
             userId: ctx.userId,
@@ -88,6 +90,29 @@ export const watchlistRouter = router({
           userRating: input.userRating,
         },
       });
+
+      const activityType =
+        input.status === "watched" ? ActivityType.marked_watched : ActivityType.added_to_watchlist;
+
+      let titleName: string | undefined;
+      let posterPath: string | undefined;
+      try {
+        const details = await getDetails(input.tmdbId, input.mediaType as MediaType);
+        titleName = details.title ?? undefined;
+        posterPath = details.poster_path ?? undefined;
+      } catch {}
+
+      await recordActivity(ctx.userId, activityType, {
+        tmdbId: input.tmdbId,
+        mediaType: input.mediaType,
+        metadata: {
+          ...(input.userRating && { rating: input.userRating }),
+          ...(titleName && { titleName }),
+          ...(posterPath && { posterPath }),
+        },
+      });
+
+      return item;
     }),
 
   update: protectedProcedure
@@ -108,13 +133,39 @@ export const watchlistRouter = router({
           message: "Watchlist item not found",
         });
       }
-      return prisma.watchlistItem.update({
+      const updated = await prisma.watchlistItem.update({
         where: { id: input.id },
         data: {
           status: input.status,
           userRating: input.userRating,
         },
       });
+
+      if (input.status === "watched" || input.userRating) {
+        let titleName: string | undefined;
+        let posterPath: string | undefined;
+        try {
+          const details = await getDetails(existing.tmdbId, existing.mediaType as MediaType);
+          titleName = details.title ?? undefined;
+          posterPath = details.poster_path ?? undefined;
+        } catch {}
+
+        if (input.status === "watched") {
+          await recordActivity(ctx.userId, ActivityType.marked_watched, {
+            tmdbId: existing.tmdbId,
+            mediaType: existing.mediaType,
+            metadata: { ...(titleName && { titleName }), ...(posterPath && { posterPath }) },
+          });
+        } else if (input.userRating) {
+          await recordActivity(ctx.userId, ActivityType.rated_title, {
+            tmdbId: existing.tmdbId,
+            mediaType: existing.mediaType,
+            metadata: { rating: input.userRating, ...(titleName && { titleName }), ...(posterPath && { posterPath }) },
+          });
+        }
+      }
+
+      return updated;
     }),
 
   remove: protectedProcedure
