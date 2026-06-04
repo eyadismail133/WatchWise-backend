@@ -17,6 +17,12 @@ import {
   type MediaType,
 } from "../../services/tmdb.js";
 
+import {
+  getAiRecommendation,
+  getAiTasteProfile,
+  type AiTasteResult,
+} from "../../services/aiRecommendation.js";
+
 const discoverInput = z.object({
   page: z.number().int().min(1).max(500).optional(),
   sort_by: z.string().optional(),
@@ -217,6 +223,321 @@ export const movieRouter = router({
       topMoods,
       summary,
     };
+  }),
+
+  // Feature 1: AI-powered discover assistant
+  askAi: protectedProcedure
+    .input(z.object({ prompt: z.string().min(3).max(500) }))
+    .mutation(async ({ input, ctx }) => {
+      // Gather light taste context to help the AI personalise the pick
+      const [watchlist, favorites] = await Promise.all([
+        prisma.watchlistItem.findMany({
+          where: { userId: ctx.userId },
+          take: 15,
+          orderBy: { updatedAt: "desc" },
+        }),
+        prisma.favorite.findMany({
+          where: { userId: ctx.userId },
+          take: 10,
+          orderBy: { createdAt: "desc" },
+        }),
+      ]);
+
+      const genreCounts = new Map<string, number>();
+      const watchHistory: string[] = [];
+
+      await Promise.all(
+        [...watchlist, ...favorites].map(async (ref) => {
+          try {
+            const detail = await getDetails(ref.tmdbId, ref.mediaType as MediaType);
+            watchHistory.push(detail.title);
+            for (const genre of detail.genres) {
+              genreCounts.set(genre, (genreCounts.get(genre) ?? 0) + 1);
+            }
+          } catch {
+            // ignore
+          }
+        }),
+      );
+
+      const topGenres = [...genreCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([name]) => name);
+
+      const profile = await prisma.tasteProfile.findUnique({
+        where: { userId: ctx.userId },
+      });
+      const topMoods =
+        (profile?.favoriteMoods as string[] | null)?.slice(0, 4) ?? [];
+
+      // Ask the AI
+      const aiResult = await getAiRecommendation({
+        userPrompt: input.prompt,
+        topGenres,
+        topMoods,
+        watchHistory: watchHistory.slice(0, 10),
+      });
+
+      // Resolve against TMDB so we always return a real card
+      let titleDetail;
+      try {
+        const searchResults = await searchMulti(aiResult.title);
+        const match =
+          searchResults.results.find((r) => r.mediaType === aiResult.mediaType) ??
+          searchResults.results[0];
+
+        if (match) {
+          titleDetail = await getDetails(match.id, match.mediaType as MediaType);
+        }
+      } catch {
+        // ignore search failures
+      }
+
+      // Fallback: pick a random trending title
+      if (!titleDetail) {
+        const fallbackMediaType: MediaType =
+          aiResult.mediaType === "tv" ? "tv" : "movie";
+        const pick = await getRandomTrendingPick(fallbackMediaType);
+        titleDetail = await getDetails(pick.id, fallbackMediaType);
+      }
+
+      return {
+        title: titleDetail,
+        confidence: Math.floor(80 + Math.random() * 15),
+        explanation: aiResult.explanation,
+        moodTags: titleDetail.genres.slice(0, 3).map((g) => g.toLowerCase()),
+        isHiddenGem: (titleDetail.hidden_gem_score ?? 0) > 30,
+      };
+    }),
+
+  // Feature 2: AI-generated taste profile (cached)
+  getAiTasteProfile: protectedProcedure.query(async ({ ctx }) => {
+    const CACHE_DAYS = 7;
+    const cached = await prisma.tasteProfile.findUnique({
+      where: { userId: ctx.userId },
+    });
+
+    // Return cache if fresh and has AI scores
+    if (cached?.aiSummary && cached.narrativeScore !== null) {
+      const age =
+        (Date.now() - new Date(cached.updatedAt).getTime()) /
+        (1000 * 60 * 60 * 24);
+      if (age < CACHE_DAYS) {
+        return {
+          narrative: cached.narrativeScore ?? 50,
+          visual: cached.visualScore ?? 50,
+          emotional: cached.emotionalScore ?? 50,
+          pacing: cached.pacingScore ?? 50,
+          era: cached.eraScore ?? 50,
+          breadth: cached.genreBreadthScore ?? 50,
+          topGenres: (cached.favoriteGenres as string[] | null) ?? [],
+          topMoods: (cached.favoriteMoods as string[] | null) ?? [],
+          personality:
+            (cached.dislikedPatterns as { personality?: string } | null)
+              ?.personality ?? "Cinema Wanderer",
+          summary: cached.aiSummary,
+        } satisfies AiTasteResult;
+      }
+    }
+
+    // Build activity context
+    const [watchlist, favorites] = await Promise.all([
+      prisma.watchlistItem.findMany({
+        where: { userId: ctx.userId },
+        take: 30,
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.favorite.findMany({
+        where: { userId: ctx.userId },
+        take: 20,
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+    const favoriteSet = new Set(
+      favorites.map((f) => `${f.tmdbId}-${f.mediaType}`),
+    );
+
+    const activity: {
+      title: string;
+      genres: string[];
+      mediaType: string;
+      userRating?: number | null;
+      status?: string;
+      isFavorite: boolean;
+      year?: number | null;
+    }[] = [];
+
+    await Promise.all(
+      [...watchlist, ...favorites].map(async (ref) => {
+        try {
+          const detail = await getDetails(
+            ref.tmdbId,
+            ref.mediaType as MediaType,
+          );
+          const key = `${ref.tmdbId}-${ref.mediaType}`;
+          activity.push({
+            title: detail.title,
+            genres: detail.genres,
+            mediaType: ref.mediaType,
+            userRating: "userRating" in ref ? ref.userRating : undefined,
+            status: "status" in ref ? (ref.status as string) : undefined,
+            isFavorite: favoriteSet.has(key),
+            year: detail.releaseYear,
+          });
+        } catch {
+          // ignore
+        }
+      }),
+    );
+
+    if (activity.length === 0) {
+      return {
+        narrative: 50,
+        visual: 50,
+        emotional: 50,
+        pacing: 50,
+        era: 50,
+        breadth: 50,
+        topGenres: [],
+        topMoods: [],
+        personality: "Cinema Wanderer",
+        summary:
+          "Start watching and rating titles to build your taste profile.",
+      } satisfies AiTasteResult;
+    }
+
+    const result = await getAiTasteProfile(activity);
+
+    // Persist to cache
+    await prisma.tasteProfile.upsert({
+      where: { userId: ctx.userId },
+      create: {
+        userId: ctx.userId,
+        narrativeScore: result.narrative,
+        visualScore: result.visual,
+        emotionalScore: result.emotional,
+        pacingScore: result.pacing,
+        eraScore: result.era,
+        genreBreadthScore: result.breadth,
+        favoriteGenres: result.topGenres,
+        favoriteMoods: result.topMoods,
+        aiSummary: result.summary,
+        dislikedPatterns: { personality: result.personality },
+      },
+      update: {
+        narrativeScore: result.narrative,
+        visualScore: result.visual,
+        emotionalScore: result.emotional,
+        pacingScore: result.pacing,
+        eraScore: result.era,
+        genreBreadthScore: result.breadth,
+        favoriteGenres: result.topGenres,
+        favoriteMoods: result.topMoods,
+        aiSummary: result.summary,
+        dislikedPatterns: { personality: result.personality },
+      },
+    });
+
+    return result;
+  }),
+
+  // Force-regenerate the AI taste profile (clears cache)
+  regenerateTasteProfile: protectedProcedure.mutation(async ({ ctx }) => {
+    // Clear the cached AI summary to force recompute on next getAiTasteProfile call
+    await prisma.tasteProfile.upsert({
+      where: { userId: ctx.userId },
+      create: { userId: ctx.userId, aiSummary: null, narrativeScore: null },
+      update: { aiSummary: null, narrativeScore: null },
+    });
+
+    // Build fresh activity context
+    const [watchlist, favorites] = await Promise.all([
+      prisma.watchlistItem.findMany({
+        where: { userId: ctx.userId },
+        take: 30,
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.favorite.findMany({
+        where: { userId: ctx.userId },
+        take: 20,
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+    const favoriteSet = new Set(
+      favorites.map((f) => `${f.tmdbId}-${f.mediaType}`),
+    );
+
+    const activity: {
+      title: string;
+      genres: string[];
+      mediaType: string;
+      userRating?: number | null;
+      status?: string;
+      isFavorite: boolean;
+      year?: number | null;
+    }[] = [];
+
+    await Promise.all(
+      [...watchlist, ...favorites].map(async (ref) => {
+        try {
+          const detail = await getDetails(
+            ref.tmdbId,
+            ref.mediaType as MediaType,
+          );
+          const key = `${ref.tmdbId}-${ref.mediaType}`;
+          activity.push({
+            title: detail.title,
+            genres: detail.genres,
+            mediaType: ref.mediaType,
+            userRating: "userRating" in ref ? ref.userRating : undefined,
+            status: "status" in ref ? (ref.status as string) : undefined,
+            isFavorite: favoriteSet.has(key),
+            year: detail.releaseYear,
+          });
+        } catch {
+          // ignore
+        }
+      }),
+    );
+
+    if (activity.length === 0) {
+      return {
+        narrative: 50,
+        visual: 50,
+        emotional: 50,
+        pacing: 50,
+        era: 50,
+        breadth: 50,
+        topGenres: [],
+        topMoods: [],
+        personality: "Cinema Wanderer",
+        summary:
+          "Start watching and rating titles to build your taste profile.",
+      } satisfies AiTasteResult;
+    }
+
+    const result = await getAiTasteProfile(activity);
+
+    await prisma.tasteProfile.update({
+      where: { userId: ctx.userId },
+      data: {
+        narrativeScore: result.narrative,
+        visualScore: result.visual,
+        emotionalScore: result.emotional,
+        pacingScore: result.pacing,
+        eraScore: result.era,
+        genreBreadthScore: result.breadth,
+        favoriteGenres: result.topGenres,
+        favoriteMoods: result.topMoods,
+        aiSummary: result.summary,
+        dislikedPatterns: { personality: result.personality },
+      },
+    });
+
+    return result;
   }),
 });
 
