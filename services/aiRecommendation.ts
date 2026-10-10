@@ -1,6 +1,6 @@
 import { openai } from "../lib/openai.js";
 
-const MODEL = "llama-3.3-70b-versatile";
+const MODEL = "qwen/qwen3.8-27b";
 
 interface RecommendationInput {
   userPrompt?: string;
