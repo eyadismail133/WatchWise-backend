@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
+test("the root Express app is a valid Vercel serverless export", async () => {
+  process.env.GROQ_API_KEY = "test-key";
+  const appModule = await import("../app.js");
+
+  assert.equal(appModule.default, appModule.app);
+});
+
 test("the Vercel API handler serves the health endpoint without starting a process listener", async () => {
   process.env.GROQ_API_KEY = "test-key";
   const { default: handler } = await import("../api/[...path].js");

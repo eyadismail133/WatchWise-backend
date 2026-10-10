@@ -34,3 +34,5 @@ app.use(
 app.get("/", (_request: Request, response: Response) => {
   response.send("Server is Live!");
 });
+
+export default app;
