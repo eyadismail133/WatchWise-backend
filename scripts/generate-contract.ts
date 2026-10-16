@@ -1,0 +1,212 @@
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
+import { generateDtsBundle } from "dts-bundle-generator";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const backendRoot = path.resolve(__dirname, "..");
+const defaultTarget = path.resolve(backendRoot, "../WatchWise-frontend/src/contracts/app-router.d.ts");
+
+const BASELINE_COMMIT = "ed81891c5cfd59afa852bad930fdb9c3b8d14e4b";
+
+function normalizeLf(text: string): string {
+  return text.replace(/\r\n/g, "\n");
+}
+
+function normalizeText(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+$/gm, "")
+    .trim() + "\n";
+}
+
+export function computeSourceHash(): string {
+  const tsconfigPath = path.join(backendRoot, "tsconfig.json");
+  if (!fs.existsSync(tsconfigPath)) {
+    throw new Error(`Expected tsconfig.json missing at ${tsconfigPath}`);
+  }
+
+  const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+  if (configFile.error) {
+    throw new Error(`Failed to read tsconfig.json: ${String(configFile.error.messageText)}`);
+  }
+
+  const parsedCommandLine = ts.parseJsonConfigFileContent(
+    configFile.config,
+    ts.sys,
+    backendRoot
+  );
+
+  const routerPath = path.join(backendRoot, "src/router.ts");
+  if (!fs.existsSync(routerPath)) {
+    throw new Error(`Expected router source missing at ${routerPath}`);
+  }
+
+  const program = ts.createProgram({
+    rootNames: [routerPath],
+    options: {
+      ...parsedCommandLine.options,
+      noEmit: true,
+    },
+  });
+
+  const sourceFiles = program.getSourceFiles();
+
+  // Explicit config / metadata files required for declaration closure
+  const requiredMetadataFiles = [
+    "tsconfig.json",
+    "scripts/generate-contract.ts",
+    "package.json",
+    "package-lock.json",
+    "prisma/schema.prisma",
+  ];
+
+  for (const rel of requiredMetadataFiles) {
+    const abs = path.join(backendRoot, rel);
+    if (!fs.existsSync(abs)) {
+      throw new Error(`Expected contract dependency missing at ${abs}`);
+    }
+  }
+
+  const fileSet = new Set<string>();
+  for (const rel of requiredMetadataFiles) {
+    fileSet.add(path.resolve(backendRoot, rel));
+  }
+
+  for (const sf of sourceFiles) {
+    const normalizedFile = path.resolve(sf.fileName);
+    // Exclude node_modules and external typescript lib files
+    if (
+      normalizedFile.startsWith(backendRoot) &&
+      !normalizedFile.includes(`${path.sep}node_modules${path.sep}`) &&
+      !normalizedFile.includes("/node_modules/")
+    ) {
+      fileSet.add(normalizedFile);
+    }
+  }
+
+  // Ensure lib/auth.ts and lib/prisma.ts are explicitly included if present
+  const explicitInternalFiles = [
+    "lib/auth.ts",
+    "lib/prisma.ts",
+  ];
+  for (const rel of explicitInternalFiles) {
+    const abs = path.join(backendRoot, rel);
+    if (fs.existsSync(abs)) {
+      fileSet.add(abs);
+    }
+  }
+
+  const entries: { relPath: string; content: string }[] = [];
+  for (const abs of fileSet) {
+    if (!fs.existsSync(abs)) {
+      throw new Error(`Contract source dependency not found: ${abs}`);
+    }
+    const relPath = path.relative(backendRoot, abs).split(path.sep).join("/");
+    const rawContent = fs.readFileSync(abs, "utf8");
+    // Normalize UTF-8 line endings to LF before hashing
+    const normalizedContent = normalizeLf(rawContent);
+    entries.push({ relPath, content: normalizedContent });
+  }
+
+  // Stable ordering
+  entries.sort((a, b) => a.relPath.localeCompare(b.relPath));
+
+  const hash = crypto.createHash("sha256");
+  for (const entry of entries) {
+    // Unambiguous framing via JSON serialization
+    hash.update(JSON.stringify({ path: entry.relPath, content: entry.content }));
+  }
+
+  return hash.digest("hex");
+}
+
+export function generateContract(targetPath = defaultTarget, isCheck = false): boolean {
+  console.log(`Generating AppRouter contract from ${path.join(backendRoot, "src/router.ts")}...`);
+
+  const sourceHash = computeSourceHash();
+
+  const bundles = generateDtsBundle(
+    [
+      {
+        filePath: path.join(backendRoot, "src/router.ts"),
+      },
+    ],
+    {
+      preferredConfigPath: path.join(backendRoot, "tsconfig.json"),
+    }
+  );
+
+  if (!bundles || bundles.length === 0) {
+    throw new Error("Failed to generate declaration bundle from backend router.");
+  }
+
+  let code = bundles[0];
+
+  // Deterministically map Zod 3 declaration imports to zod-v3 alias for Zod 4 frontend compatibility
+  code = code.replace(/import\("zod"\)/g, 'import("zod-v3")');
+
+  // Ensure trailing export is clean
+  code = code.replace(/\nexport\s*\{\s*\};\s*$/, "\n");
+
+  const header = `/**
+ * WatchWise AppRouter Contract Snapshot (.d.ts)
+ *
+ * PROVENANCE:
+ * - Baseline backend commit: ${BASELINE_COMMIT}
+ * - Source contract hash: ${sourceHash}
+ * - Generated by WatchWise-backend/scripts/generate-contract.ts
+ * - Derived directly from backend src/router.ts and its procedure closure.
+ *
+ * REPRODUCIBILITY & DRIFT CHECK:
+ * - In WatchWise-backend: run "npm run contract:check" to verify that the checked-in
+ *   contract matches current backend source without drift.
+ * - In WatchWise-backend: run "npm run contract:generate" to regenerate this file.
+ * - In WatchWise-frontend: install/build/test gates use this checked-in declaration
+ *   without requiring sibling checkout or live backend connections.
+ */
+`;
+
+  const finalContent = normalizeText(`${header}\n${code}`);
+
+  if (isCheck) {
+    if (!fs.existsSync(targetPath)) {
+      console.error(`Contract check failed: Target file does not exist at ${targetPath}`);
+      return false;
+    }
+    const existing = normalizeText(fs.readFileSync(targetPath, "utf8"));
+    if (existing !== finalContent) {
+      console.error(`Contract check failed: Drift detected between backend source and ${targetPath}`);
+      return false;
+    }
+    console.log(`Contract check passed: ${targetPath} is up to date.`);
+    return true;
+  }
+
+  const targetDir = path.dirname(targetPath);
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+
+  fs.writeFileSync(targetPath, finalContent, "utf8");
+  console.log(`Successfully written AppRouter contract to ${targetPath}`);
+  return true;
+}
+
+const args = process.argv.slice(2);
+const isCheckMode = args.includes("--check");
+const outIndex = args.indexOf("--out");
+const targetFile = outIndex !== -1 && args[outIndex + 1] ? path.resolve(args[outIndex + 1]) : defaultTarget;
+
+try {
+  const ok = generateContract(targetFile, isCheckMode);
+  if (!ok) {
+    process.exit(1);
+  }
+} catch (err) {
+  console.error("Error generating contract:", err);
+  process.exit(1);
+}
