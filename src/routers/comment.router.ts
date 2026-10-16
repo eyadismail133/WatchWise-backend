@@ -11,7 +11,7 @@ const tmdbRef = z.object({
   mediaType: z.enum(["movie", "tv"]),
 });
 
-type CommentRow = {
+export type CommentRow = {
   id: number;
   userId: number;
   tmdbId: number;
