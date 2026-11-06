@@ -4,9 +4,25 @@ import { router, publicProcedure, protectedProcedure } from "../trpc.js";
 import prisma from "../../lib/prisma.js";
 
 import {
+  discoverAdvanced,
   discoverMovies,
   discoverTv,
+  browseBy,
+  getCollection,
+  getEpisodeRatings,
+  getReleaseCalendar,
   getDetails,
+  getFullDetails,
+  getGenres,
+  getList,
+  getPerson,
+  getProviderCatalog,
+  getReviews,
+  getSeason,
+  getTrendingPeople,
+  searchAll,
+  searchByMedia,
+  searchPeople,
   getImages,
   getRandomTrendingPick,
   getSimilar,
@@ -34,6 +50,15 @@ const mediaTypeInput = z.enum(["movie", "tv"]);
 
 const timeWindowInput = z.enum(["day", "week"]);
 
+const regionInput = z
+  .string()
+  .regex(/^[A-Z]{2}$/, "Region must be an ISO 3166-1 alpha-2 code")
+  .optional();
+
+const pageInput = z.number().int().min(1).max(500).optional();
+const idInput = z.number().int().positive();
+const yearInput = z.number().int().min(1870).max(2100);
+
 export const movieRouter = router({
   discoverMovie: publicProcedure
     .input(discoverInput.optional())
@@ -48,9 +73,10 @@ export const movieRouter = router({
       z.object({
         id: z.number().int().positive(),
         mediaType: mediaTypeInput,
+        region: regionInput,
       }),
     )
-    .query(({ input }) => getDetails(input.id, input.mediaType)),
+    .query(({ input }) => getFullDetails(input.id, input.mediaType, input.region)),
 
   images: publicProcedure
     .input(
@@ -66,10 +92,163 @@ export const movieRouter = router({
       z
         .object({
           timeWindow: timeWindowInput.optional(),
+          mediaType: z.enum(["all", "movie", "tv"]).optional(),
+          page: pageInput,
         })
         .optional(),
     )
-    .query(({ input }) => getTrending(input?.timeWindow ?? "week")),
+    .query(({ input }) =>
+      getTrending(input?.timeWindow ?? "week", input?.mediaType ?? "all", input?.page ?? 1),
+    ),
+
+  // Curated TMDB lists: popular, top rated, now playing, upcoming, airing today, on the air
+  list: publicProcedure
+    .input(
+      z.object({
+        mediaType: mediaTypeInput,
+        category: z.enum([
+          "popular",
+          "top_rated",
+          "now_playing",
+          "upcoming",
+          "airing_today",
+          "on_the_air",
+        ]),
+        page: pageInput,
+      }),
+    )
+    .query(({ input }) => getList(input.mediaType, input.category, input.page ?? 1)),
+
+  genres: publicProcedure
+    .input(z.object({ mediaType: mediaTypeInput }))
+    .query(({ input }) => getGenres(input.mediaType)),
+
+  providers: publicProcedure
+    .input(z.object({ mediaType: mediaTypeInput, region: regionInput }))
+    .query(({ input }) => getProviderCatalog(input.mediaType, input.region ?? "US")),
+
+  // Full-featured discover with genre / year / rating / runtime / language / provider filters
+  discoverAdvanced: publicProcedure
+    .input(
+      z
+        .object({
+          mediaType: mediaTypeInput,
+          page: pageInput,
+          sort: z
+            .enum(["popularity", "rating", "newest", "oldest", "votes", "revenue", "title"])
+            .optional(),
+          genres: z.array(idInput).max(10).optional(),
+          excludeGenres: z.array(idInput).max(10).optional(),
+          yearFrom: yearInput.optional(),
+          yearTo: yearInput.optional(),
+          ratingMin: z.number().min(0).max(10).optional(),
+          voteCountMin: z.number().int().min(0).max(100000).optional(),
+          runtimeMin: z.number().int().min(0).max(600).optional(),
+          runtimeMax: z.number().int().min(0).max(600).optional(),
+          language: z
+            .string()
+            .regex(/^[a-z]{2}$/, "Language must be an ISO 639-1 code")
+            .optional(),
+          providers: z.array(idInput).max(10).optional(),
+          region: regionInput,
+          keywords: z.array(idInput).max(10).optional(),
+          withPeople: z.array(idInput).max(5).optional(),
+        })
+        .refine(
+          (v) => !v.yearFrom || !v.yearTo || v.yearFrom <= v.yearTo,
+          { message: "yearFrom must be before yearTo" },
+        )
+        .refine(
+          (v) => v.runtimeMin === undefined || v.runtimeMax === undefined || v.runtimeMin <= v.runtimeMax,
+          { message: "runtimeMin must be at most runtimeMax" },
+        ),
+    )
+    .query(({ input }) => discoverAdvanced(input)),
+
+  releaseCalendar: publicProcedure
+    .input(
+      z
+        .object({
+          mediaType: mediaTypeInput,
+          from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          region: regionInput,
+          page: pageInput,
+        })
+        .refine((v) => v.from <= v.to, { message: "from must be before to" })
+        .refine(
+          (v) => (Date.parse(v.to) - Date.parse(v.from)) / 86_400_000 <= 62,
+          { message: "Range is limited to about two months" },
+        ),
+    )
+    .query(({ input }) => getReleaseCalendar(input)),
+
+  episodeRatings: publicProcedure
+    .input(z.object({ tvId: idInput }))
+    .query(({ input }) => getEpisodeRatings(input.tvId)),
+
+  browse: publicProcedure
+    .input(
+      z.object({
+        kind: z.enum(["keyword", "company", "network"]),
+        id: idInput,
+        mediaType: mediaTypeInput.default("movie"),
+        page: pageInput,
+        sort: z.enum(["popularity", "rating", "newest", "votes"]).optional(),
+      }),
+    )
+    .query(({ input }) => browseBy(input)),
+
+  person: publicProcedure
+    .input(z.object({ id: idInput }))
+    .query(({ input }) => getPerson(input.id)),
+
+  trendingPeople: publicProcedure
+    .input(
+      z
+        .object({ timeWindow: timeWindowInput.optional(), page: pageInput })
+        .optional(),
+    )
+    .query(({ input }) => getTrendingPeople(input?.timeWindow ?? "week", input?.page ?? 1)),
+
+  season: publicProcedure
+    .input(
+      z.object({
+        tvId: idInput,
+        seasonNumber: z.number().int().min(0).max(500),
+      }),
+    )
+    .query(({ input }) => getSeason(input.tvId, input.seasonNumber)),
+
+  collection: publicProcedure
+    .input(z.object({ id: idInput }))
+    .query(({ input }) => getCollection(input.id)),
+
+  reviews: publicProcedure
+    .input(z.object({ id: idInput, mediaType: mediaTypeInput, page: pageInput }))
+    .query(({ input }) => getReviews(input.id, input.mediaType, input.page ?? 1)),
+
+  // Titles + people in one request
+  searchAll: publicProcedure
+    .input(z.object({ query: z.string().trim().min(1).max(200), page: pageInput }))
+    .query(({ input }) => searchAll(input.query, input.page ?? 1)),
+
+  searchTitles: publicProcedure
+    .input(
+      z.object({
+        query: z.string().trim().min(1).max(200),
+        mediaType: mediaTypeInput,
+        page: pageInput,
+        year: yearInput.optional(),
+      }),
+    )
+    .query(({ input }) =>
+      searchByMedia(input.query, input.mediaType, input.page ?? 1, input.year),
+    ),
+
+  searchPeople: publicProcedure
+    .input(z.object({ query: z.string().trim().min(1).max(200), page: pageInput }))
+    .query(({ input }) => searchPeople(input.query, input.page ?? 1)),
 
   topRated: publicProcedure
     .input(

@@ -48,6 +48,23 @@ export const watchlistRouter = router({
       return titles.filter(Boolean);
     }),
 
+  // Lightweight per-user status index: lets the UI badge every card from one
+  // cached query instead of one getByTitle request per poster.
+  statusMap: protectedProcedure.query(({ ctx }) =>
+    prisma.watchlistItem.findMany({
+      where: { userId: ctx.userId },
+      select: {
+        id: true,
+        tmdbId: true,
+        mediaType: true,
+        status: true,
+        userRating: true,
+      },
+      orderBy: { updatedAt: "desc" },
+      take: 5000,
+    }),
+  ),
+
   getByTitle: protectedProcedure
     .input(tmdbRefInput)
     .query(async ({ ctx, input }) => {

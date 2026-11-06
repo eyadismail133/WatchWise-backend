@@ -103,3 +103,21 @@ PostgreSQL 18.4. Complete original-row/sequence preservation and modern
 reconciliation were checked alongside guarded rollback and explicit preflight
 drift rejection. Original SQL, current model and generated client stayed unchanged.
 README records exact scenarios and production limitations.
+
+## TMDB service workflow: 2026-11-06
+
+All TMDB GETs go through `cachedGet` in `services/tmdb.ts` (TTL cache, in-flight
+de-duplication, 10 s timeout). Use `getDetails` (lightweight, unchanged shape)
+for loops such as watchlists and taste profiles; reserve `getFullDetails` for the
+detail page. Bundle related data with `append_to_response` instead of extra
+requests. Unit-test service changes by replacing the default axios instance's
+`get` and calling `clearTmdbCache()` between tests (see `test/tmdb.test.ts`).
+After procedure changes regenerate and check the frontend contract.
+
+Verification on 2026-11-06 (Claude, container): build, 12 tests and contract
+check pass; Prisma validation was blocked by the engine download and the schema
+is unchanged. GPT-6.1 Sol review was not run in this session.
+
+Second pass 2026-11-06: map upstream errors inside `cachedGet` only; use
+`TMDB_BASE_URL` with a fake server for end-to-end checks instead of live keys.
+Build, 16 tests and contract check pass.

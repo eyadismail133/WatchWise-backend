@@ -348,3 +348,56 @@ Following-feed privacy, broader auth/provider testing and CI remain separate wor
 Independent GPT-6.1 Sol code/test review returned **APPROVED** after rerunning
 all backend gates, including the four migration fixture groups, and confirming
 that no owned fixture databases remained.
+
+## Rich TMDB API and caching: 2026-11-06
+
+`services/tmdb.ts` gained a per-process TTL cache (10 min default, 600 entries,
+in-flight de-duplication) and a 10 s request timeout. List items now carry real
+genre names (genre IDs used to be returned as strings), an HD backdrop
+(`backdrop_hd`), `voteCount`, `originalLanguage` and a computed
+`hidden_gem_score`. TV "upcoming" maps to TMDB `on_the_air` (there is no
+`/tv/upcoming`). Existing procedures keep their names and inputs.
+
+New or extended public `movie.*` procedures (all Zod-validated):
+
+| Procedure | Purpose |
+| --- | --- |
+| `details` (+ optional `region`) | One `append_to_response` call: videos, gallery and logo, keywords, certification, watch providers, recommendations, reviews, external IDs, crew highlights, collection, companies/networks, seasons, next/last episode, budget/revenue |
+| `trending` (+ `mediaType`, `page`) | All, movie or TV trending |
+| `list` | `popular`, `top_rated`, `now_playing`, `upcoming`, `airing_today`, `on_the_air` |
+| `discoverAdvanced` | Genres, excluded genres, year range, minimum rating/votes, runtime, language, streaming providers + region, keywords, people, sort |
+| `genres`, `providers` | Filter catalogs |
+| `person`, `trendingPeople`, `searchPeople` | People pages and search |
+| `season`, `collection`, `reviews` | TV episodes, film sagas, paged reviews |
+| `searchAll`, `searchTitles` | Titles + people together, or one media type with pagination |
+
+`watchlist.statusMap` (protected) returns the caller's `{id, tmdbId, mediaType,
+status, userRating}` rows so the UI can badge every card from one query.
+
+Checks in this change: `npm run build`, 12 `npm test` tests (8 new TMDB service
+tests with a stubbed HTTP client), `npm run contract:generate` and
+`npm run contract:check` pass. `npm exec -- prisma validate` could not run in the
+build environment (Prisma engine download blocked); `prisma/schema.prisma` is
+unchanged. No migration, database write or live TMDB call was made. The cache is
+per process, like the rate limiter. Not reviewed by GPT-6.1 Sol; uncommitted.
+
+## Calendar, episode ratings, browse and error mapping: 2026-11-06 (second pass)
+
+New public procedures: `movie.releaseCalendar` (theatrical releases by region
+via `with_release_type=2|3`, or TV with episodes airing in the window; ranges up
+to ~2 months), `movie.episodeRatings` (all seasons via `append_to_response`
+in chunks of 20, plus best/worst/average aired episode) and `movie.browse`
+(keyword, company or network header plus paged titles; networks are TV only).
+Episodes now include `episodeType` (e.g. `finale`), and `externalIds.imdb` falls
+back to the movie `imdb_id`.
+
+Upstream failures are mapped to tRPC errors (`NOT_FOUND`, `TOO_MANY_REQUESTS`,
+otherwise `INTERNAL_SERVER_ERROR` "Catalog service unavailable"), so TMDB URLs
+and keys never reach clients. `TMDB_BASE_URL` (optional) points the client at a
+different TMDB-compatible host for local end-to-end tests.
+
+Checks: build, 16 tests (4 new), contract generate/check. A local end-to-end
+sweep ran the real Express app against a fake TMDB server: 33 procedure calls,
+including invalid-input (400) and anonymous protected-call (401) cases, all
+returned the expected status with no unknown TMDB paths requested. Prisma
+validation remains blocked in the build environment; the schema is unchanged.
